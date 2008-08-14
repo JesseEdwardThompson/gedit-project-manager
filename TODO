@@ -1,0 +1,14 @@
+create/save/load project files
+add/remove files from project
+support click actions
+    (double click is row-activated)
+    double click expands/collapses directories
+    double click opens files in the editor
+    right click opens context menu
+support keyboard navigation
+    up/down already works
+    enter/return work the same as double click?
+allow multiple selections
+
+long term
+    svn support
