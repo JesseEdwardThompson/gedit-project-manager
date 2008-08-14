@@ -18,6 +18,7 @@ import os
 import gtk
 import gobject
 import gedit
+import urllib
 from xml.dom import minidom
 
 class ProjectBrowser( gtk.VBox ):
@@ -28,6 +29,9 @@ class ProjectBrowser( gtk.VBox ):
         
         gtk.VBox.__init__(self)
         self.geditwindow = geditwindow
+        
+        try: self.encoding = gedit.encoding_get_current()
+        except: self.encoding = gedit.gedit_encoding_get_current()
 
         self.build_toolbar()
 
@@ -62,6 +66,7 @@ class ProjectBrowser( gtk.VBox ):
         self.browser = gtk.TreeView(self.treestore)
         self.browser.set_headers_visible(False)
         self.browser.get_selection().set_mode(gtk.SELECTION_MULTIPLE)
+        self.browser.connect("row-activated", self.row_activated)
         sw.add(self.browser)
         
         self.pack_start(sw)
@@ -90,6 +95,31 @@ class ProjectBrowser( gtk.VBox ):
 
         self.show_all()
         
+    def row_activated(self, widget, path, view_column):
+        """Callback for treeview row-activated signal"""
+        piter = self.treestore.get_iter(path)
+        project_file = self.treestore.get(piter, 1)[0]
+        # if row at path has children, toggle expanded state
+        if self.treestore.iter_has_child(piter):
+            if self.browser.row_expanded(path):
+                self.browser.collapse_row(path)
+            else:
+                self.browser.expand_row(path, False)
+
+        # if row at path is a file (os.path.isfile), open it in the editor
+        elif os.path.isfile(project_file):
+            file_uri = self.to_uri(project_file)
+            file_open = False
+            for open_file in self.geditwindow.get_documents():
+                if open_file.get_uri() == file_uri:
+                    file_open = True
+                    break
+            if file_open:
+                self.geditwindow.set_active_tab(self.geditwindow.get_tab_from_uri(self.to_uri(project_file)))
+            else:
+                self.geditwindow.create_tab_from_uri(self.to_uri(project_file),
+                                                 self.encoding, 0, False, True)
+
     def build_toolbar(self):
         """Creates a toolbar with project related actions"""
         tb = gtk.Toolbar()
@@ -120,8 +150,9 @@ class ProjectBrowser( gtk.VBox ):
         """
         xml = minidom.parse(os.path.expanduser("~/test.gedit-project"))
         for subfile in xml.getElementsByTagName('file'):
-            if os.path.isfile(subfile.childNodes[0].data.strip()):
-                self.filelist.append(subfile.childNodes[0].data.strip())
+            subfile = self.from_uri(subfile.childNodes[0].data)
+            if os.path.isfile(subfile):
+                self.filelist.append(subfile)
         self.filelist.sort(self.insensitive_cmp)
         
     def save_filelist(self):
@@ -134,7 +165,7 @@ class ProjectBrowser( gtk.VBox ):
         for filename in self.filelist:
             file_element = minidom.Element( 'file' )
             text_node = minidom.Text()
-            text_node.data = filename
+            text_node.data = self.to_uri(filename)
             file_element.childNodes.append( text_node )
             gedit_project_element.childNodes.append( file_element )
 
@@ -194,3 +225,12 @@ class ProjectBrowser( gtk.VBox ):
         """A case-insensitive comparison method used for sorting"""
         return cmp(str_1.lower(), str_2.lower())
 
+    def from_uri(self, uri):
+        uri = uri.strip()
+        if uri.startswith("file://"):
+            uri = uri[7:]
+        return urllib.unquote(uri)
+
+    def to_uri(self, string):
+        return "file://"+urllib.quote(string)
+        
