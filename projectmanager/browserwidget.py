@@ -15,6 +15,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
+import string
 import gtk
 import gobject
 import gedit
@@ -26,10 +27,10 @@ class ProjectBrowser( gtk.VBox ):
 
     def __init__(self, geditwindow):
         """ geditwindow -- an instance of gedit.Window """
-        
+
         gtk.VBox.__init__(self)
         self.geditwindow = geditwindow
-        
+
         try: self.encoding = gedit.encoding_get_current()
         except: self.encoding = gedit.gedit_encoding_get_current()
 
@@ -39,7 +40,7 @@ class ProjectBrowser( gtk.VBox ):
         self.treestore = gtk.TreeStore(gobject.TYPE_STRING,  # short name
                                        gobject.TYPE_STRING,  # long name
                                        gtk.gdk.Pixbuf)       # file/folder icon
-        
+
         # build a list of all project files
         self.filelist = []
         self.load_filelist()
@@ -47,18 +48,21 @@ class ProjectBrowser( gtk.VBox ):
         # get the common prefix of all project files
         self.prefix = os.path.commonprefix(self.filelist)
         self.prefixlen = len(self.prefix)
-        
+
         # Create a (filename, [list of directories in path) list
         # to pass to self.add_dir_to_tree
         dirlist = []
         for project_file in self.filelist:
-            separated_dirs = project_file[self.prefixlen:].split(os.sep)
+            
+            separated_dirs = \
+                self.from_uri(project_file[self.prefixlen:]).split("/")
             dirlist.append((project_file, separated_dirs))
-        
+
         # Add all files to self.treestore
-        root_iter = self.treestore.get_iter_root()        
-        self.add_dir_to_tree(root_iter, self.prefix, self.prefix, dirlist)
-        
+        root_iter = self.treestore.get_iter_root()
+        self.add_dir_to_tree(root_iter, self.from_uri(self.prefix), 
+                             self.prefix, dirlist)
+
         # Put a scrolled window in the widget, and fill it with a treeview
         sw = gtk.ScrolledWindow()
         sw.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
@@ -68,7 +72,7 @@ class ProjectBrowser( gtk.VBox ):
         self.browser.get_selection().set_mode(gtk.SELECTION_MULTIPLE)
         self.browser.connect("row-activated", self.row_activated)
         sw.add(self.browser)
-        
+
         self.pack_start(sw)
 
         # add a column to the treeview
@@ -79,26 +83,27 @@ class ProjectBrowser( gtk.VBox ):
         self.cpb = gtk.CellRendererPixbuf()
         self.column.pack_start(self.cpb,False)
         self.column.add_attribute(self.cpb, 'pixbuf', 2)
-        
+
         # add a text cell to the column (for short filename)
         self.crt = gtk.CellRendererText()
         self.column.pack_start(self.crt,True)
         self.column.add_attribute(self.crt, 'text', 0)
-        
+
         # add a text cell to the column (for long filename)
         #self.long_crt = gtk.CellRendererText()
         #self.column.pack_start(self.long_crt,True)
         #self.column.add_attribute(self.long_crt, 'text', 1)
-        
+
         # expand root project folder
         self.browser.expand_row((0,), False)
 
         self.show_all()
-        
+
     def row_activated(self, widget, path, view_column):
         """Callback for treeview row-activated signal"""
         piter = self.treestore.get_iter(path)
         project_file = self.treestore.get(piter, 1)[0]
+        
         # if row at path has children, toggle expanded state
         if self.treestore.iter_has_child(piter):
             if self.browser.row_expanded(path):
@@ -106,29 +111,19 @@ class ProjectBrowser( gtk.VBox ):
             else:
                 self.browser.expand_row(path, False)
 
-        # if row at path is a file (os.path.isfile), open it in the editor
-        elif os.path.isfile(project_file):
-            file_uri = self.to_uri(project_file)
-            file_open = False
-            for open_file in self.geditwindow.get_documents():
-                if open_file.get_uri() == file_uri:
-                    file_open = True
-                    break
-            if file_open:
-                self.geditwindow.set_active_tab(self.geditwindow.get_tab_from_uri(self.to_uri(project_file)))
-            else:
-                self.geditwindow.create_tab_from_uri(self.to_uri(project_file),
-                                                 self.encoding, 0, False, True)
+        # if row at path is a file, open it in the editor
+        elif gedit.utils.uri_has_file_scheme(project_file):
+            gedit.commands.load_uri(self.geditwindow, project_file)
 
     def build_toolbar(self):
         """Creates a toolbar with project related actions"""
         tb = gtk.Toolbar()
         new_button = gtk.ToolButton(gtk.STOCK_NEW)
         new_button.set_tooltip_text("Create a new project")
-        
+
         open_button = gtk.ToolButton(gtk.STOCK_OPEN)
         open_button.set_tooltip_text("Open a project")
-        
+
         add_button = gtk.ToolButton(gtk.STOCK_ADD)
         add_button.set_tooltip_text("Add file(s) to project")
 
@@ -150,11 +145,11 @@ class ProjectBrowser( gtk.VBox ):
         """
         xml = minidom.parse(os.path.expanduser("~/test.gedit-project"))
         for subfile in xml.getElementsByTagName('file'):
-            subfile = self.from_uri(subfile.childNodes[0].data)
-            if os.path.isfile(subfile):
+            subfile = subfile.childNodes[0].data
+            if gedit.utils.uri_exists(subfile):
                 self.filelist.append(subfile)
         self.filelist.sort(self.insensitive_cmp)
-        
+
     def save_filelist(self):
         """Saves all files in self.filelist into a project file"""
         out_xml = minidom.Document()
@@ -165,7 +160,7 @@ class ProjectBrowser( gtk.VBox ):
         for filename in self.filelist:
             file_element = minidom.Element( 'file' )
             text_node = minidom.Text()
-            text_node.data = self.to_uri(filename)
+            text_node.data = filename
             file_element.childNodes.append( text_node )
             gedit_project_element.childNodes.append( file_element )
 
@@ -181,27 +176,28 @@ class ProjectBrowser( gtk.VBox ):
         at position specified by dir_iter.
         """
         file_icon = 0
-        if os.path.isfile(project_file):
-            file_icon = self.render_icon(gtk.STOCK_FILE, 
+        if gedit.utils.uri_has_file_scheme(project_file):
+            file_icon = self.render_icon(gtk.STOCK_FILE,
                                          gtk.ICON_SIZE_SMALL_TOOLBAR)
         else:
-            file_icon = self.render_icon(gtk.STOCK_DIRECTORY, 
+            file_icon = self.render_icon(gtk.STOCK_DIRECTORY,
                                          gtk.ICON_SIZE_SMALL_TOOLBAR)
-        self.treestore.append(dir_iter, [project_file.split(os.sep).pop(), 
-                                         project_file, file_icon])
+        self.treestore.append(dir_iter, 
+                              [urllib.unquote(project_file.split("/").pop()),
+                               project_file, file_icon])
 
     def add_dir_to_tree(self, piter, dir_to_add, dir_full_path, dirlist):
         """Recursively adds directories in dirlist to the project
         browser filetree at position specified by dir_iter.
         Calls add_file_to_tree for any files in dirlist.
         """
-        dir_iter = self.treestore.append(piter, 
+        dir_iter = self.treestore.append(piter,
             [dir_to_add, dir_full_path, self.render_icon(gtk.STOCK_DIRECTORY,
             gtk.ICON_SIZE_SMALL_TOOLBAR)])
         dirmap = {}
-        
+
         dir_filelist = []
-        
+
         for (project_file, separated_dirs) in dirlist:
             if len(separated_dirs) > 1:
                 if separated_dirs[0] not in dirmap:
@@ -214,10 +210,10 @@ class ProjectBrowser( gtk.VBox ):
                 dir_filelist.append(project_file)
 
         for key in sorted(dirmap.keys(), self.insensitive_cmp):
-            self.add_dir_to_tree(dir_iter, key, 
-                                 os.path.join(dir_full_path, key), 
+            self.add_dir_to_tree(dir_iter, key,
+                                 string.join([dir_full_path, key, "/"], ""),
                                  dirmap[key])
-                
+
         for project_file in sorted(dir_filelist, self.insensitive_cmp):
             self.add_file_to_tree(dir_iter, project_file)
 
@@ -231,6 +227,3 @@ class ProjectBrowser( gtk.VBox ):
             uri = uri[7:]
         return urllib.unquote(uri)
 
-    def to_uri(self, string):
-        return "file://"+urllib.quote(string)
-        
